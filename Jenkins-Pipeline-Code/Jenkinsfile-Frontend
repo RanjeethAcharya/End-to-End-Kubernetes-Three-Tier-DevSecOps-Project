@@ -87,7 +87,7 @@ pipeline {
                             cat deployment.yaml
                             git add deployment.yaml
                             git commit -m "Update deployment Image to version ${BUILD_NUMBER}"
-                            git push https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/RanjeethAcharya/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project HEAD:master
+                            git push https://github.com/RanjeethAcharya/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project HEAD:master
                         '''
                     }
                 }
