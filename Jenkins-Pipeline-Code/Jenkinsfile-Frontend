@@ -1,16 +1,14 @@
 pipeline {
     agent any 
     tools {
-        // jdk 'jdk'
         nodejs 'nodejs'
     }
-    environment  {
+    environment {
         APP_Name = "frontend"
-        SCANNER_HOME=tool 'sonar-scanner'
-        SONARQUBE = "sonarqube"
+        SCANNER_HOME = tool 'sonar-scanner'
         DOCKER_USER = "ranjeeth3302"
         DOCKER_PASS = "dockerhub"
-        DOCKER_IMAGE = "${DOCKER_USER}" + "/" + "${APP_Name}"
+        DOCKER_IMAGE = "${DOCKER_USER}/${APP_Name}"
     }
     stages {
         stage('Cleaning Workspace') {
@@ -26,11 +24,12 @@ pipeline {
         stage('SonarQube Analysis') {
             steps {
                 dir('Application-Code/frontend') {
-                    withSonarQubeEnv('sonarqube') {
+                    withSonarQubeEnv('sonar-token') {
                         sh """
                             $SCANNER_HOME/bin/sonar-scanner \
-                            -Dsonar.projectName=three-tier-frontend \
-                            -Dsonar.projectKey=three-tier-frontend 
+                            -Dsonar.projectName=frontend \
+                            -Dsonar.projectKey=frontend \
+                            -Dsonar.projectVersion=${env.BUILD_NUMBER}
                         """
                     }
                 }
@@ -39,7 +38,7 @@ pipeline {
         stage('Quality Check') {
             steps {
                 script {
-                    waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token' 
+                    waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token'
                 }
             }
         }
@@ -56,9 +55,8 @@ pipeline {
                     dir('Application-Code/frontend') {
                         sh 'docker system prune -f'
                         sh 'docker container prune -f'
-                        sh 'docker build -t ${DOCKER_IMAGE} .'
+                        def dockerImage = docker.build("${DOCKER_IMAGE}:${BUILD_NUMBER}")
                         docker.withRegistry("", 'dockerhub') {
-                            def dockerImage = docker.build("${DOCKER_IMAGE}")
                             dockerImage.push("${BUILD_NUMBER}")
                             dockerImage.push('latest')
                         }
@@ -69,28 +67,27 @@ pipeline {
         stage("TRIVY Image Scan") {
             steps {
                 script {
-                    sh "docker run -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image ${DOCKER_IMAGE} --no-progress --scanners vuln --exit-code 0 --severity HIGH,CRITICAL --format table"
+                    sh "docker run -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image ${DOCKER_IMAGE}:${BUILD_NUMBER} --no-progress --scanners vuln --exit-code 0 --severity HIGH,CRITICAL --format table"
                 }
             }
         }
         stage('Checkout Code') {
             steps {
-                git credentialsId: 'GITHUB', url: 'https://github.com/RanjeethAcharya/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project.git'
+                git credentialsId: 'github', url: 'https://github.com/RanjeethAcharya/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project.git'
             }
         }
         stage('Update Deployment file') {
             steps {
                 dir('Kubernetes-Manifests-file/Frontend') {
-                    withCredentials([gitUsernamePassword(credentialsId: 'github', gitToolName: 'Default')]) {
+                    withCredentials([usernamePassword(credentialsId: 'github', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) {
                         sh '''
                             git config user.email "ranjeetkumar933342@gmail.com"
                             git config user.name "RanjeethAcharya"
-                            BUILD_NUMBER=${BUILD_NUMBER}
                             sed -i "s|image: ${DOCKER_USER}/${APP_Name}:.*|image: ${DOCKER_USER}/${APP_Name}:${BUILD_NUMBER}|g" deployment.yaml
                             cat deployment.yaml
                             git add deployment.yaml
-                            git commit -m "Update deployment Image to version \${BUILD_NUMBER}"
-                            git push https://github.com/RanjeethAcharya/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project HEAD:master
+                            git commit -m "Update deployment Image to version ${BUILD_NUMBER}"
+                            git push https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/RanjeethAcharya/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project HEAD:master
                         '''
                     }
                 }
