@@ -1,5 +1,7 @@
 pipeline {
-    agent any 
+    agent {
+        label 'jenkins-agent' 
+    }
     tools {
         nodejs 'nodejs'
     }
@@ -9,6 +11,8 @@ pipeline {
         DOCKER_USER = "ranjeeth3302"
         DOCKER_PASS = "dockerhub"
         DOCKER_IMAGE = "${DOCKER_USER}/${APP_Name}"
+        GIT_REPO_GIT = "https://github.com/RanjeethAcharya/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project.git"
+        GIT_REPO = "https://github.com/RanjeethAcharya/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project"
     }
     stages {
         stage('Cleaning Workspace') {
@@ -16,36 +20,42 @@ pipeline {
                 cleanWs()
             }
         }
-        stage('Checkout from Git') {
+        stage("Git Checkout") {
             steps {
-                git credentialsId: 'github', url: 'https://github.com/RanjeethAcharya/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project.git'
+                checkout([$class: 'GitSCM', branches: [[name: '*/master']],
+                    userRemoteConfigs: [[credentialsId: 'github', url: "${GIT_REPO_GIT}"]]
+                ])
             }
         }
         stage('SonarQube Analysis') {
             steps {
                 dir('Application-Code/frontend') {
-                    withSonarQubeEnv('sonar-token') {
-                        sh """
-                            $SCANNER_HOME/bin/sonar-scanner \
-                            -Dsonar.projectName=frontend \
-                            -Dsonar.projectKey=frontend \
-                            -Dsonar.projectVersion=${env.BUILD_NUMBER}
-                        """
+                    script {
+                        withSonarQubeEnv(credentialsId: 'sonarqube') {
+                            sh """
+                                $SCANNER_HOME/bin/sonar-scanner \
+                                -Dsonar.projectName=frontend \
+                                -Dsonar.projectKey=frontend \
+                                -Dsonar.projectVersion=${env.BUILD_NUMBER}
+                            """
+                        }
                     }
                 }
             }
         }
-        stage('Quality Check') {
-            steps {
-                script {
-                    waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token'
-                }
-            }
-        }
+        // stage('Quality Check') {
+        //     steps {
+        //         script {
+        //             waitForQualityGate abortPipeline: false, credentialsId: 'sonarqube'
+        //         }
+        //     }
+        // }
         stage('Trivy File Scan') {
             steps {
-                dir('Application-Code/frontend') {
-                    sh 'trivy fs . > trivyfs.txt'
+                script {
+                    dir('Application-Code/frontend/') {
+                        sh 'trivy fs . > trivyfs.txt'
+                    }
                 }
             }
         }
@@ -64,22 +74,29 @@ pipeline {
                 }
             }
         }
+        // stage("TRIVY Image Scan") {
+        //     steps {
+        //         script {
+        //             sh "docker run -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image ${DOCKER_IMAGE}:${BUILD_NUMBER} --no-progress --scanners vuln --exit-code 0 --severity HIGH,CRITICAL --format table"
+        //         }
+        //     }
+        // }
         stage("TRIVY Image Scan") {
             steps {
-                script {
-                    sh "docker run -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image ${DOCKER_IMAGE}:${BUILD_NUMBER} --no-progress --scanners vuln --exit-code 0 --severity HIGH,CRITICAL --format table"
-                }
+                sh 'trivy image ${DOCKER_IMAGE}:${BUILD_NUMBER} > trivyimage.txt' 
             }
         }
-        stage('Checkout Code') {
+        stage("Git pull") {
             steps {
-                git credentialsId: 'github', url: 'https://github.com/RanjeethAcharya/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project.git'
+                checkout([$class: 'GitSCM', branches: [[name: '*/master']],
+                    userRemoteConfigs: [[credentialsId: 'github', url: "${GIT_REPO_GIT}"]]
+                ])
             }
         }
         stage('Update Deployment file') {
             steps {
                 dir('Kubernetes-Manifests-file/Frontend') {
-                    withCredentials([usernamePassword(credentialsId: 'github', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) {
+                    withCredentials([gitUsernamePassword(credentialsId: 'github', gitToolName: 'Default')]) {
                         sh '''
                             git config user.email "ranjeetkumar933342@gmail.com"
                             git config user.name "RanjeethAcharya"
@@ -87,9 +104,17 @@ pipeline {
                             cat deployment.yaml
                             git add deployment.yaml
                             git commit -m "Update deployment Image to version ${BUILD_NUMBER}"
-                            git push https://github.com/RanjeethAcharya/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project HEAD:master
+                            git push ${GIT_REPO} HEAD:master
                         '''
                     }
+                }
+            }
+        }
+        stage("Cleanup containers") {
+            steps {
+                script {
+                    sh "docker rmi ${DOCKER_IMAGE}:${BUILD_NUMBER}"
+                    sh "docker rmi ${DOCKER_IMAGE}:latest"
                 }
             }
         }
