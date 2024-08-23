@@ -1,15 +1,19 @@
+
 pipeline {
-    agent any 
+    agent {
+        label 'jenkins-agent' 
+    }
     tools {
-        jdk 'jdk'
         nodejs 'nodejs'
     }
-    environment  {
-        SCANNER_HOME=tool 'sonar-scanner'
-        AWS_ACCOUNT_ID = credentials('ACCOUNT_ID')
-        AWS_ECR_REPO_NAME = credentials('ECR_REPO2')
-        AWS_DEFAULT_REGION = 'us-east-1'
-        REPOSITORY_URI = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/"
+    environment {
+        APP_Name = "backend"
+        SCANNER_HOME = tool 'sonar-scanner'
+        DOCKER_USER = "ranjeeth3302"
+        DOCKER_PASS = "dockerhub"
+        DOCKER_IMAGE = "${DOCKER_USER}/${APP_Name}"
+        GIT_REPO_GIT = "https://github.com/RanjeethAcharya/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project.git"
+        GIT_REPO = "https://github.com/RanjeethAcharya/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project"
     }
     stages {
         stage('Cleaning Workspace') {
@@ -17,41 +21,42 @@ pipeline {
                 cleanWs()
             }
         }
-        stage('Checkout from Git') {
+        stage("Git Checkout") {
             steps {
-                git credentialsId: 'GITHUB', url: 'https://github.com/AmanPathak-DevOps/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project.git'
+                checkout([$class: 'GitSCM', branches: [[name: '*/master']],
+                    userRemoteConfigs: [[credentialsId: 'github', url: "${GIT_REPO_GIT}"]]
+                ])
             }
         }
-        stage('Sonarqube Analysis') {
+        stage('SonarQube Analysis') {
             steps {
                 dir('Application-Code/backend') {
-                    withSonarQubeEnv('sonar-server') {
-                        sh ''' $SCANNER_HOME/bin/sonar-scanner \
-                        -Dsonar.projectName=three-tier-backend \
-                        -Dsonar.projectKey=three-tier-backend '''
+                    script {
+                        withSonarQubeEnv(credentialsId: 'sonarqube') {
+                            sh """
+                                $SCANNER_HOME/bin/sonar-scanner \
+                                -Dsonar.projectName=backend \
+                                -Dsonar.projectKey=backend \
+                                -Dsonar.projectVersion=${env.BUILD_NUMBER}
+                            """
+                        }
                     }
                 }
             }
         }
-        stage('Quality Check') {
-            steps {
-                script {
-                    waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token' 
-                }
-            }
-        }
-        stage('OWASP Dependency-Check Scan') {
-            steps {
-                dir('Application-Code/backend') {
-                    dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit', odcInstallation: 'DP-Check'
-                    dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
-                }
-            }
-        }
+        // stage('Quality Check') {
+        //     steps {
+        //         script {
+        //             waitForQualityGate abortPipeline: false, credentialsId: 'sonarqube'
+        //         }
+        //     }
+        // }
         stage('Trivy File Scan') {
             steps {
-                dir('Application-Code/backend') {
-                    sh 'trivy fs . > trivyfs.txt'
+                script {
+                    dir('Application-Code/backend/') {
+                        sh 'trivy fs . > trivyfs.txt'
+                    }
                 }
             }
         }
@@ -59,53 +64,60 @@ pipeline {
             steps {
                 script {
                     dir('Application-Code/backend') {
-                            sh 'docker system prune -f'
-                            sh 'docker container prune -f'
-                            sh 'docker build -t ${AWS_ECR_REPO_NAME} .'
+                        sh 'docker system prune -f'
+                        sh 'docker container prune -f'
+                        def dockerImage = docker.build("${DOCKER_IMAGE}:${BUILD_NUMBER}")
+                        docker.withRegistry("", 'dockerhub') {
+                            dockerImage.push("${BUILD_NUMBER}")
+                            dockerImage.push('latest')
+                        }
                     }
                 }
             }
         }
-        stage("ECR Image Pushing") {
-            steps {
-                script {
-                        sh 'aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${REPOSITORY_URI}'
-                        sh 'docker tag ${AWS_ECR_REPO_NAME} ${REPOSITORY_URI}${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}'
-                        sh 'docker push ${REPOSITORY_URI}${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}'
-                }
-            }
-        }
+        // stage("TRIVY Image Scan") {
+        //     steps {
+        //         script {
+        //             sh "docker run -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image ${DOCKER_IMAGE}:${BUILD_NUMBER} --no-progress --scanners vuln --exit-code 0 --severity HIGH,CRITICAL --format table"
+        //         }
+        //     }
+        // }
         stage("TRIVY Image Scan") {
             steps {
-                sh 'trivy image ${REPOSITORY_URI}${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} > trivyimage.txt' 
+                sh 'trivy image ${DOCKER_IMAGE}:${BUILD_NUMBER} > trivyimage.txt' 
             }
         }
-        stage('Checkout Code') {
+        stage("Git pull") {
             steps {
-                git credentialsId: 'GITHUB', url: 'https://github.com/AmanPathak-DevOps/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project.git'
+                checkout([$class: 'GitSCM', branches: [[name: '*/master']],
+                    userRemoteConfigs: [[credentialsId: 'github', url: "${GIT_REPO_GIT}"]]
+                ])
             }
         }
         stage('Update Deployment file') {
-            environment {
-                GIT_REPO_NAME = "End-to-End-Kubernetes-Three-Tier-DevSecOps-Project"
-                GIT_USER_NAME = "AmanPathak-DevOps"
-            }
             steps {
                 dir('Kubernetes-Manifests-file/Backend') {
-                    withCredentials([string(credentialsId: 'github', variable: 'GITHUB_TOKEN')]) {
+                    withCredentials([gitUsernamePassword(credentialsId: 'github', gitToolName: 'Default')]) {
                         sh '''
-                            git config user.email "aman07pathak@gmail.com"
-                            git config user.name "AmanPathak-DevOps"
-                            BUILD_NUMBER=${BUILD_NUMBER}
-                            echo $BUILD_NUMBER
-                            imageTag=$(grep -oP '(?<=backend:)[^ ]+' deployment.yaml)
-                            echo $imageTag
-                            sed -i "s/${AWS_ECR_REPO_NAME}:${imageTag}/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}/" deployment.yaml
+                            git config user.email "ranjeetkumar933342@gmail.com"
+                            git config user.name "RanjeethAcharya"
+                            sed -i "s|image: ${DOCKER_USER}/${APP_Name}:.*|image: ${DOCKER_USER}/${APP_Name}:${BUILD_NUMBER}|g" deployment.yaml
+                            cat deployment.yaml
                             git add deployment.yaml
-                            git commit -m "Update deployment Image to version \${BUILD_NUMBER}"
-                            git push https://${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME} HEAD:master
+                            git commit -m "Update deployment Image to version ${BUILD_NUMBER}"
+                            git push ${GIT_REPO} HEAD:master
                         '''
                     }
+                }
+            }
+        }
+        stage("Cleanup containers") {
+            steps {
+                script {
+                    sh "docker rmi ${DOCKER_IMAGE}:${BUILD_NUMBER}"
+                    sh "docker rmi ${DOCKER_IMAGE}:latest"
+                    sh 'docker system prune -f'
+                    sh 'docker container prune -f'
                 }
             }
         }
